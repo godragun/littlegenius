@@ -12,6 +12,9 @@ export default function DashboardPage() {
   const [user, setUser] = useState(null)
   const [profile, setProfile] = useState(null)
   const [modules, setModules] = useState([])
+  const [lessons, setLessons] = useState([])
+  const [quizzes, setQuizzes] = useState([])
+  const [steps, setSteps] = useState([])
   const [shorts, setShorts] = useState([])
   const [progress, setProgress] = useState({})
   const [unlockedMods, setUnlockedMods] = useState({})
@@ -47,6 +50,17 @@ export default function DashboardPage() {
       .order('sort_order', { ascending: true })
     setModules(mods || [])
 
+    const { data: ls } = await supabase
+      .from('lessons')
+      .select('*')
+      .order('step_number')
+    setLessons(ls || [])
+
+    const { data: qs } = await supabase
+      .from('quizzes')
+      .select('*, quiz_questions(*)')
+    setQuizzes(qs || [])
+
     const { data: sh } = await supabase
       .from('shorts')
       .select('*')
@@ -67,11 +81,10 @@ export default function DashboardPage() {
 
     // Auto-unlock: if all published modules in a tier have 3 stars, unlock next tier
     const unlocked = {}
-    const modsData = modules || []
-    const tiers = [...new Set(modsData.map((m) => m.tier))].sort((a, b) => a - b)
+    const tiers = [...new Set(mods.map((m) => m.tier))].sort((a, b) => a - b)
     let prevTierComplete = true
     tiers.forEach((tier) => {
-      const tierMods = modsData.filter((m) => m.tier === tier && m.status === 'published')
+      const tierMods = mods.filter((m) => m.tier === tier && m.status === 'published')
       const allComplete = tierMods.every((m) => (progMap[m.id]?.stars || 0) >= 3)
       tierMods.forEach((m) => {
         unlocked[m.id] = prevTierComplete
@@ -79,6 +92,29 @@ export default function DashboardPage() {
       prevTierComplete = allComplete
     })
     setUnlockedMods(unlocked)
+
+    // Build flat steps from all modules
+    const allSteps = []
+    const lessonsData = ls || []
+    const quizzesData = qs || []
+    mods.forEach((mod) => {
+      const modLessons = lessonsData.filter((l) => l.module_id === mod.id).sort((a, b) => a.step_number - b.step_number)
+      const modQuizzes = quizzesData.filter((q) => q.module_id === mod.id)
+      const locked = mod.locked && !unlocked[mod.id] && (progMap[mod.id]?.stars || 0) === 0
+      const modProgress = progMap[mod.id]
+      const stars = modProgress?.stars || 0
+      modLessons.forEach((lesson) => {
+        const lessonQuiz = modQuizzes.find((q) => q.lesson_id === lesson.id)
+        allSteps.push({ type: 'video', mod, lesson, lessonQuiz, stepNumber: lesson.step_number, locked, stars, modProgress })
+        if (lesson.knowledge_text) {
+          allSteps.push({ type: 'knowledge', mod, lesson, lessonQuiz, stepNumber: lesson.step_number, locked, stars, modProgress })
+        }
+        if (lessonQuiz) {
+          allSteps.push({ type: 'quiz', mod, lesson, quiz: lessonQuiz, stepNumber: lesson.step_number, locked, stars, modProgress })
+        }
+      })
+    })
+    setSteps(allSteps)
 
     setLoading(false)
   }
@@ -183,7 +219,7 @@ export default function DashboardPage() {
 
       {/* Content */}
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-        {tab === 'path' && <PathTab modules={modules} progress={progress} onSelect={setSelMod} profile={profile} unlockedMods={unlockedMods} />}
+        {tab === 'path' && <PathTab steps={steps} modules={modules} progress={progress} onSelect={(mod) => router.push(`/module/${mod.id}`)} profile={profile} unlockedMods={unlockedMods} />}
         {tab === 'shorts' && (
           <div style={{ padding: 'clamp(12px, 2vw, 24px)', display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ fontWeight: 700, fontSize: 'clamp(14px, 2.5vw, 18px)' }}>⚡ Science Shorts</div>
@@ -347,10 +383,20 @@ export default function DashboardPage() {
   )
 }
 
-// ─── PATH TAB (Duolingo-style glossy 3D) ─────────────────────────────
-function PathTab({ modules, progress, onSelect, profile, unlockedMods = {} }) {
-  const scienceIcons = ['🧪', '🔬', '🚀', '⚛️', '🔭', '🧬', '⚗️', '🧲']
-  const nodeColors = ['#FFC800', '#1CB0F6', '#8B5CF6', '#FF4B82', '#00B894', '#FD79A8', '#6C5CE7', '#00CEC9']
+// ─── PATH TAB (Duolingo-style glossy 3D steps) ──────────────────────
+function PathTab({ steps, modules, progress, onSelect, profile, unlockedMods }) {
+  const nodeColors = ['#1CB0F6', '#FFC800', '#8B5CF6', '#FF4B82', '#00B894', '#FD79A8', '#6C5CE7', '#00CEC9']
+
+  // Group steps by module for labels
+  const moduleLabels = {}
+  steps.forEach((s) => {
+    if (!moduleLabels[s.mod.id]) moduleLabels[s.mod.id] = { mod: s.mod, count: 0, done: 0 }
+    moduleLabels[s.mod.id].count++
+    if (s.stars > 0) moduleLabels[s.mod.id].done++
+  })
+
+  const stepIcons = { video: '📹', knowledge: '🧠', quiz: '📝' }
+  const stepLabels = { video: 'Watch', knowledge: 'Learn', quiz: 'Quiz' }
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', background: '#F0F4F8' }}>
@@ -385,75 +431,74 @@ function PathTab({ modules, progress, onSelect, profile, unlockedMods = {} }) {
           background: 'rgba(255,255,255,0.18)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: 16, cursor: 'pointer',
-        }} onClick={() => onSelect?.({ id: 'profile' })}>
+        }}>
           ☰
         </div>
       </div>
 
       {/* Glossy Path */}
       <div style={{ position: 'relative', padding: '20px 0 60px' }}>
-        {/* Winding connector line */}
         <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 0 }}>
           <path
-            d={modules.map((m, i) => {
+            d={steps.map((s, i) => {
               const cx = 195 + (i % 2 === 0 ? -78 : 78)
-              const cy = i * 108 + 72
-              return i === 0 ? `M${cx},${cy}` : `Q${195},${cy - 54} ${cx},${cy}`
+              const cy = i * 96 + 72
+              return i === 0 ? `M${cx},${cy}` : `Q${195},${cy - 48} ${cx},${cy}`
             }).join(' ')}
             fill="none" stroke="#E0E5EC" strokeWidth="8" strokeLinecap="round"
           />
-          <path
-            d={modules.map((m, i) => {
-              if ((progress[m.id]?.stars || 0) === 0 && i > 0) return ''
-              const cx = 195 + (i % 2 === 0 ? -78 : 78)
-              const cy = i * 108 + 72
-              return i === 0 ? `M${cx},${cy}` : `Q${195},${cy - 54} ${cx},${cy}`
-            }).filter(Boolean).join(' ')}
-            fill="none" stroke="#A29BFE" strokeWidth="8" strokeLinecap="round"
-          />
         </svg>
 
-        {modules.map((mod, i) => {
-          const stars = progress[mod.id]?.stars || 0
-          const locked = mod.locked && !unlockedMods[mod.id] && stars === 0
+        {steps.map((step, i) => {
+          const prevModId = i > 0 ? steps[i - 1].mod.id : null
+          const showModuleLabel = i === 0 || step.mod.id !== prevModId
+          const locked = step.locked && !step.modProgress
           const colorIdx = i % nodeColors.length
           const fill = locked ? '#E5E5E5' : nodeColors[colorIdx]
           const shadowColor = locked ? '#C8C8C8' : nodeColors[(colorIdx + 1) % nodeColors.length]
-          const isBig = i === modules.length - 1
           const offset = i % 2 === 0 ? -78 : 78
-          const icon = locked ? '🔒' : stars >= 3 ? '✅' : scienceIcons[i % scienceIcons.length]
+          const icon = locked ? '🔒' : step.stars >= 3 ? '✅' : stepIcons[step.type] || '📹'
 
           return (
-            <div key={mod.id} style={{ marginBottom: locked && i < modules.length - 1 ? 4 : 0 }}>
+            <div key={`${step.mod.id}-${i}`}>
+              {/* Module category label */}
+              {showModuleLabel && (
+                <div style={{
+                  display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 6,
+                  margin: '8px 0 4px', transform: 'translateX(0px)',
+                }}>
+                  <span style={{ fontSize: 18 }}>{step.mod.emoji}</span>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: '#3C3C3C' }}>{step.mod.title}</span>
+                </div>
+              )}
               {/* Node */}
               <div style={{
                 display: 'flex', justifyContent: 'center',
                 transform: `translateX(${offset}px)`,
-                position: 'relative', zIndex: 1,
+                position: 'relative', zIndex: 1, margin: '2px 0',
               }}>
                 <button
-                  onClick={() => !locked && onSelect(mod)}
+                  onClick={() => !locked && onSelect(step.mod)}
                   disabled={locked}
                   style={{
-                    width: isBig ? 92 : 76, height: isBig ? 92 : 76,
+                    width: 68, height: 68,
                     borderRadius: '50%', border: 'none', cursor: locked ? 'not-allowed' : 'pointer',
                     position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center',
                     background: fill,
-                    boxShadow: `0 ${isBig ? 10 : 8}px 0 ${shadowColor}`,
+                    boxShadow: `0 7px 0 ${shadowColor}`,
                     transition: 'transform 0.15s',
                   }}
                 >
-                  {/* Glossy highlight */}
                   <div style={{
-                    position: 'absolute', top: isBig ? 10 : 8, left: isBig ? 17 : 14,
-                    width: isBig ? 42 : 36, height: isBig ? 22 : 18,
+                    position: 'absolute', top: 7, left: 12,
+                    width: 32, height: 16,
                     borderRadius: '50%',
                     background: locked ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.35)',
                     pointerEvents: 'none',
                   }} />
                   <span style={{
                     position: 'relative', zIndex: 2,
-                    fontSize: isBig ? 34 : 28,
+                    fontSize: 26,
                     opacity: locked ? 0.45 : 1,
                     filter: locked ? 'grayscale(1)' : 'none',
                   }}>
@@ -461,25 +506,14 @@ function PathTab({ modules, progress, onSelect, profile, unlockedMods = {} }) {
                   </span>
                 </button>
               </div>
-              {/* Stars */}
-              <div style={{
-                display: 'flex', justifyContent: 'center', gap: 4,
-                marginTop: -2, transform: `translateX(${offset}px)`,
-              }}>
-                {[0, 1, 2].map(s => (
-                  <span key={s} style={{ fontSize: 12, color: s < stars ? '#FFC800' : '#D9D9D9' }}>
-                    {s < stars ? '⭐' : '☆'}
-                  </span>
-                ))}
-              </div>
               {/* Label */}
               <div style={{
-                textAlign: 'center', fontSize: 11, fontWeight: 700, color: locked ? '#B0B0B0' : '#3C3C3C',
-                marginTop: 2, transform: `translateX(${offset}px)`,
-                maxWidth: 120, marginLeft: 'auto', marginRight: 'auto',
+                textAlign: 'center', fontSize: 10, fontWeight: 700, color: locked ? '#B0B0B0' : '#3C3C3C',
+                marginTop: 1, transform: `translateX(${offset}px)`,
+                maxWidth: 110, marginLeft: 'auto', marginRight: 'auto',
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
               }}>
-                {mod.title}
+                {stepLabels[step.type]} {step.lesson?.title || ''}
               </div>
             </div>
           )
@@ -487,23 +521,23 @@ function PathTab({ modules, progress, onSelect, profile, unlockedMods = {} }) {
 
         {/* Companion Planet */}
         <div style={{
-          position: 'absolute', left: 24, top: Math.min(modules.length * 108 / 2, 220),
+          position: 'absolute', left: 22, top: Math.min(steps.length * 96 / 2, 220),
           display: 'flex', flexDirection: 'column', alignItems: 'center', zIndex: 2,
         }}>
           <div style={{
-            width: 64, height: 64, borderRadius: '50%',
+            width: 56, height: 56, borderRadius: '50%',
             background: 'radial-gradient(circle at 30% 28%, #B98CFF 0%, #8B5CF6 55%, #6D3FD9 100%)',
             boxShadow: '0 6px 0 #5A32B3', position: 'relative',
           }}>
             <div style={{
-              position: 'absolute', top: '50%', left: -10,
-              width: 84, height: 18, border: '4px solid #D9B8FF',
+              position: 'absolute', top: '50%', left: -8,
+              width: 72, height: 16, border: '3.5px solid #D9B8FF',
               borderRadius: '50%',
               transform: 'translateY(-50%) rotate(-10deg)',
               opacity: 0.85, pointerEvents: 'none',
             }} />
           </div>
-          <div style={{ fontSize: 10, fontWeight: 700, color: '#777', marginTop: 4 }}>Nova</div>
+          <div style={{ fontSize: 9, fontWeight: 700, color: '#777', marginTop: 4 }}>Nova</div>
         </div>
 
         {/* Discovery Chest */}
@@ -512,8 +546,8 @@ function PathTab({ modules, progress, onSelect, profile, unlockedMods = {} }) {
           transform: 'translateX(78px)',
         }}>
           <div style={{
-            width: 56, height: 56, display: 'flex', alignItems: 'center',
-            justifyContent: 'center', fontSize: 32,
+            width: 52, height: 52, display: 'flex', alignItems: 'center',
+            justifyContent: 'center', fontSize: 28,
           }}>
             🏆
           </div>
