@@ -120,7 +120,9 @@ export default function ModuleFlowPage() {
       const built = buildSteps()
       setSteps(built)
       if (progress) {
-        const resumeIdx = Math.min(progress.steps_completed?.length || 0, built.length - 1)
+        const completed = progress.steps_completed || []
+        const lastCompleted = completed.length > 0 ? Math.max(...completed) : -1
+        const resumeIdx = Math.min(lastCompleted + 1, built.length - 1)
         setStepIdx(resumeIdx)
       }
     }

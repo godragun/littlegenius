@@ -71,8 +71,11 @@ CREATE TABLE IF NOT EXISTS public.quizzes (
   title TEXT NOT NULL DEFAULT 'Quiz',
   passing_score INTEGER NOT NULL DEFAULT 80,
   max_attempts INTEGER NOT NULL DEFAULT 3,
+  time_limit INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE public.quizzes ADD COLUMN IF NOT EXISTS time_limit INTEGER NOT NULL DEFAULT 0;
 
 -- 6. QUIZ QUESTIONS
 CREATE TABLE IF NOT EXISTS public.quiz_questions (
@@ -133,7 +136,16 @@ CREATE TABLE IF NOT EXISTS public.user_badges (
   UNIQUE(user_id, badge_id)
 );
 
--- 10. SEED DATA: RANKS
+-- 10. DAILY LOGS (streak tracking)
+CREATE TABLE IF NOT EXISTS public.daily_logs (
+  id BIGSERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  login_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  xp_earned INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(user_id, login_date)
+);
+
+-- 11. SEED DATA: RANKS
 CREATE TABLE IF NOT EXISTS public.ranks (
   id BIGSERIAL PRIMARY KEY,
   title TEXT NOT NULL,
@@ -154,7 +166,7 @@ INSERT INTO public.ranks (title, min_xp, icon) VALUES
   ('Supreme Spark Commander', 50000, '🌟')
 ON CONFLICT DO NOTHING;
 
--- 11. SEED DATA: BADGES
+-- 12. SEED DATA: BADGES
 INSERT INTO public.badges (name, description, icon, criteria) VALUES
   ('First Steps', 'Complete your first module', '👣', '{"type": "modules_completed", "count": 1}'),
   ('Star Collector', 'Earn 3 stars on any module', '⭐', '{"type": "perfect_module", "count": 1}'),
@@ -164,7 +176,7 @@ INSERT INTO public.badges (name, description, icon, criteria) VALUES
   ('Knowledge Seeker', 'Watch 10 shorts', '📺', '{"type": "shorts_watched", "count": 10}')
 ON CONFLICT DO NOTHING;
 
--- 12. INDEXES
+-- 13. INDEXES
 CREATE INDEX IF NOT EXISTS idx_modules_tier ON public.modules(tier);
 CREATE INDEX IF NOT EXISTS idx_modules_status ON public.modules(status);
 CREATE INDEX IF NOT EXISTS idx_lessons_module ON public.lessons(module_id);
@@ -176,8 +188,11 @@ CREATE INDEX IF NOT EXISTS idx_user_progress_user ON public.user_progress(user_i
 CREATE INDEX IF NOT EXISTS idx_user_progress_module ON public.user_progress(module_id);
 CREATE INDEX IF NOT EXISTS idx_user_badges_user ON public.user_badges(user_id);
 CREATE INDEX IF NOT EXISTS idx_users_email ON public.users(email);
+CREATE INDEX IF NOT EXISTS idx_users_username ON public.users(username);
+CREATE INDEX IF NOT EXISTS idx_daily_logs_user ON public.daily_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_daily_logs_date ON public.daily_logs(login_date);
 
--- 13. ROW LEVEL SECURITY
+-- 14. ROW LEVEL SECURITY
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.modules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.lessons ENABLE ROW LEVEL SECURITY;
@@ -187,6 +202,7 @@ ALTER TABLE public.shorts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_progress ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.badges ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_badges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.daily_logs ENABLE ROW LEVEL SECURITY;
 
 -- Everyone can read published modules, lessons, quizzes, shorts
 DROP POLICY IF EXISTS "Published content is public" ON public.modules;
@@ -212,9 +228,25 @@ CREATE POLICY "Users read own data" ON public.users
 DROP POLICY IF EXISTS "Users read own progress" ON public.user_progress;
 CREATE POLICY "Users read own progress" ON public.user_progress
   FOR SELECT USING (EXISTS (SELECT 1 FROM public.users WHERE id = user_id AND auth_id = auth.uid()));
+DROP POLICY IF EXISTS "Users insert own progress" ON public.user_progress;
+CREATE POLICY "Users insert own progress" ON public.user_progress
+  FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM public.users WHERE id = user_id AND auth_id = auth.uid()));
+DROP POLICY IF EXISTS "Users update own progress" ON public.user_progress;
+CREATE POLICY "Users update own progress" ON public.user_progress
+  FOR UPDATE USING (EXISTS (SELECT 1 FROM public.users WHERE id = user_id AND auth_id = auth.uid()))
+  WITH CHECK (EXISTS (SELECT 1 FROM public.users WHERE id = user_id AND auth_id = auth.uid()));
+DROP POLICY IF EXISTS "Users delete own progress" ON public.user_progress;
+CREATE POLICY "Users delete own progress" ON public.user_progress
+  FOR DELETE USING (EXISTS (SELECT 1 FROM public.users WHERE id = user_id AND auth_id = auth.uid()));
 DROP POLICY IF EXISTS "Users read own badges" ON public.user_badges;
 CREATE POLICY "Users read own badges" ON public.user_badges
   FOR SELECT USING (EXISTS (SELECT 1 FROM public.users WHERE id = user_id AND auth_id = auth.uid()));
+DROP POLICY IF EXISTS "Users read own daily_logs" ON public.daily_logs;
+CREATE POLICY "Users read own daily_logs" ON public.daily_logs
+  FOR SELECT USING (EXISTS (SELECT 1 FROM public.users WHERE id = user_id AND auth_id = auth.uid()));
+DROP POLICY IF EXISTS "Users insert own daily_logs" ON public.daily_logs;
+CREATE POLICY "Users insert own daily_logs" ON public.daily_logs
+  FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM public.users WHERE id = user_id AND auth_id = auth.uid()));
 
 -- Helper function to check if the current user is an admin without RLS recursion
 CREATE OR REPLACE FUNCTION public.is_admin()
@@ -272,8 +304,13 @@ CREATE POLICY "Admins full access badges" ON public.user_badges
   FOR ALL USING (
     public.is_admin()
   );
+DROP POLICY IF EXISTS "Admins full access daily_logs" ON public.daily_logs;
+CREATE POLICY "Admins full access daily_logs" ON public.daily_logs
+  FOR ALL USING (
+    public.is_admin()
+  );
 
--- 14. FUNCTIONS
+-- 15. FUNCTIONS
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
