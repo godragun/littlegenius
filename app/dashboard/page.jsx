@@ -448,10 +448,10 @@ function PathTab({ steps, modules, progress, onSelect, profile, unlockedMods }) 
   const ICON_SIZE = Math.round(22 * SCALE)
   const NODE_R = Math.round(34 * SCALE)
   const AMPLITUDE = Math.round(65 * SCALE)
-  const V_SPACING = Math.round(130 * SCALE)
+  const V_SPACING = Math.round(150 * SCALE)
   const CENTER_X = Math.round(160 * SCALE)
   const START_Y = 50
-  const STEP_MARGIN = isDesktop ? 36 : 30
+  const STEP_MARGIN = isDesktop ? 48 : 40
 
   const moduleLabels = {}
   steps.forEach((s) => {
